@@ -2,6 +2,8 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md)
 
+**免责声明：本项目在开发过程中广泛使用了 AI 辅助：大部分实现改动由 AI 辅助工作流生成，随后通过运行测试、调试和反复迭代进行验证。 在将本项目用于生产环境之前，请先仔细审查相关改动。**
+
 一个 [DeepSeek Harness](https://github.com/deepseek-ai)（DSH）插件：在 Windows 上用
 **`llama-server.exe` 运行本地 GGUF 模型**，并把它以稳定的 OpenAI 兼容接口暴露给 DSH。
 
