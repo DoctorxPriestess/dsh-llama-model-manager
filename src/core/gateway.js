@@ -310,8 +310,10 @@ export class Gateway {
       const target = `http://${upstream.connectHost}:${upstream.port}${pathname}${url.search}`;
       const headers = buildUpstreamHeaders(req.headers);
       if (settings.proxyTimeoutMs > 0) {
+        // NOT unref()'d: this is the deadline that aborts a wedged upstream
+        // request. Unref'ing it would let the loop drain instead of firing, and
+        // a stalled generation would hang forever. Cleared in `finally`.
         timer = setTimeout(() => controller.abort(new Error('proxy timeout')), settings.proxyTimeoutMs);
-        if (typeof timer.unref === 'function') timer.unref();
       }
 
       this.log.info(`[manager] proxy request ${req.method} ${pathname} -> ${upstream.connectHost}:${upstream.port}`);

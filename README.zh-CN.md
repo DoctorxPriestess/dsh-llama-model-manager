@@ -259,7 +259,7 @@ npm start                 # 不依赖 DSH，单独跑 Gateway + 管理器
 ## 开发
 
 ```bash
-npm test                  # 64 个单元/集成测试，约 4 秒，不需要模型
+npm test                  # 66 个单元/集成测试，约 4 秒，不需要模型
 npm run preflight         # 校验注册到 DSH profile 是否正确
 npm run e2e:ctrlc         # 真实模型：优雅停止 + 显存释放
 npm run e2e:orphan        # 真实模型：残留进程安全门 + 清理

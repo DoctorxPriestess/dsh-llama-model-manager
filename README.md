@@ -270,7 +270,7 @@ Useful for driving the gateway from any other client. Pass `--port`, `--host`,
 ## Development
 
 ```bash
-npm test                  # 64 unit/integration tests, ~4 s, no model needed
+npm test                  # 66 unit/integration tests, ~4 s, no model needed
 npm run preflight         # validate registration into a DSH profile
 npm run e2e:ctrlc         # real model: graceful stop + VRAM release
 npm run e2e:orphan        # real model: leftover-process safety gate + cleanup

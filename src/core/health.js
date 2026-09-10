@@ -157,9 +157,11 @@ export function checkPortAvailable(host, port, { timeoutMs = 1500 } = {}) {
   return new Promise((resolve) => {
     const server = net.createServer();
     let settled = false;
+    let timer = null;
     const finish = (result) => {
       if (settled) return;
       settled = true;
+      if (timer) clearTimeout(timer);
       try {
         server.close();
       } catch {
@@ -169,8 +171,10 @@ export function checkPortAvailable(host, port, { timeoutMs = 1500 } = {}) {
     };
     server.once('error', (error) => finish({ free: false, error: error.code ?? error.message }));
     server.once('listening', () => finish({ free: true }));
-    const timer = setTimeout(() => finish({ free: false, error: 'port check timed out' }), timeoutMs);
-    if (typeof timer.unref === 'function') timer.unref();
+    // NOT unref()'d: if listen() never reports back, this deadline is the only
+    // thing that can settle the awaited promise. It is cleared in finish(), so
+    // it cannot keep the process alive past the check.
+    timer = setTimeout(() => finish({ free: false, error: 'port check timed out' }), timeoutMs);
     try {
       server.listen({ host: normalizeBindHost(host), port, exclusive: true });
     } catch (error) {

@@ -18,11 +18,15 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
-import { LlamaModelManager, decodeConsoleOutput } from '../src/core/manager.js';import { Logger } from '../src/core/logger.js';
+import { LlamaModelManager, decodeConsoleOutput } from '../src/core/manager.js';
+import { Logger } from '../src/core/logger.js';
 import { normalizeConfig } from '../src/core/config.js';
 
-const PROJECT = path.resolve(import.meta.dirname, '..');
+// fileURLToPath+URL rather than import.meta.dirname: the latter needs Node
+// 20.11+, while this package declares a >=20.10 floor.
+const PROJECT = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const silent = new Logger({ level: 'error' });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

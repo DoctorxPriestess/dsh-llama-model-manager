@@ -337,7 +337,8 @@ export class LlamaServerProcess extends EventEmitter {
         }
         finish({ ok: false, error: 'ctrl+c helper timed out' });
       }, 15000);
-      if (typeof timer.unref === 'function') timer.unref();
+      // NOT unref()'d: if the helper wedges, this deadline is the only thing
+      // that settles the awaited promise below. Cleared in finish().
 
       child.stdout?.on('data', (d) => { out += d.toString(); });
       child.stderr?.on('data', (d) => { errOut.push(d.toString()); });
@@ -394,8 +395,11 @@ export class LlamaServerProcess extends EventEmitter {
     if (this.exited) return true;
     let timer = null;
     const timeout = new Promise((resolve) => {
+      // NOT unref()'d: this timer IS the promise being raced. Unref'ing it lets
+      // the loop drain before the deadline fires, so the race never settles and
+      // the awaiting stop()/killNow() hangs. Cleared right below once the race
+      // resolves, so it never lingers.
       timer = setTimeout(() => resolve(false), ms);
-      if (typeof timer.unref === 'function') timer.unref();
     });
     const result = await Promise.race([this.waitForExit().then(() => true), timeout]);
     if (timer) clearTimeout(timer);

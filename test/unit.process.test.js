@@ -29,10 +29,14 @@ class FakeChild extends EventEmitter {
 
   /** Simulate the process exiting after `delayMs`. */
   exitAfter(delayMs, code = 0, signal = null) {
+    // NOT unref()'d: this timer is the only settler of waitForExit(), which
+    // stop() awaits. Unref'ing it let the event loop drain first, so the await
+    // was dropped and `node --test` reported the pending promise as
+    // 'cancelledByParent' on Node 20/22.
+    if (this._timer) clearTimeout(this._timer);
     this._timer = setTimeout(() => {
       this.emit('exit', code, signal);
     }, delayMs);
-    if (typeof this._timer.unref === 'function') this._timer.unref();
     return this;
   }
 }

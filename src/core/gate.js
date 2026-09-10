@@ -220,7 +220,12 @@ export class ModelGate {
           if (index >= 0) this._waitingExclusives.splice(index, 1);
           this._grantWrite(next, { forced: true });
         }, next.drainTimeoutMs);
-        if (typeof next.drainTimer.unref === 'function') next.drainTimer.unref();
+        // NOT unref()'d -- deliberately. This deadline is the only thing that
+        // can grant a queued exclusive waiter when the in-flight request never
+        // finishes. `unref()` would let the event loop drain first and drop the
+        // deadline entirely, leaving that waiter (and whoever awaits it) hung.
+        // It is always cleared by _grantWrite()/_release()/abortAll(), so it
+        // cannot outlive the transition it guards.
       }
     }
     this._notify();

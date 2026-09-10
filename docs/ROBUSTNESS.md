@@ -156,16 +156,72 @@ error while handling argument "-fa": unknown value for --flash-attn: '--no-webui
 
 ---
 
-## E. 回归防线
+## E. 事件循环语义
 
-| 测试 | 覆盖 |
+### E1. `unref()` 掉一个 deadline，`await` 会**永远丢失**
+
+这是 CI 在 **Node 20/22 失败、Node 24 通过**的根因。
+
+```js
+// 反面写法
+const timer = setTimeout(() => resolve(false), ms);
+timer.unref();                 // “别让这个定时器维持进程存活”
+const result = await race;     // 但 race 的唯一结算者就是它
+```
+
+`unref()` 之后，若事件循环上没有别的句柄撑着，Node 判定「无事可做」→ **直接排空循环** →
+定时器永不触发 → `await` 永不返回。顶层 await 的进程以 **退出码 13** 结束：
+
+```
+Warning: Detected unsettled top-level await at ...:54
+```
+
+在 `node --test` 下则报成：
+
+```
+Promise resolution is still pending but the event loop has already resolved
+failureType: 'cancelledByParent'
+```
+
+**为什么只在 20/22 上炸**：那两版的 test runner 跑用例时不会额外持有事件循环句柄，循环真的
+被排空；Node 24 的 runner 恰好拿着一个句柄，把缺陷掩盖了。所以这是**真实的代码缺陷**，
+不是测试环境问题 —— 同样的写法在生产里遇到「除这个 deadline 外没有别的活」的时刻就会挂死。
+
+**判据**：一个定时器的触发如果是某个被 `await` 的 promise 的**唯一**结算者，就绝不能
+`unref()`。`unref()` 只适用于「可选的、丢了也不影响正确性」的后台清理。
+
+修复点（全部改为不 `unref`，并确保在正常路径上 `clearTimeout`）：
+
+| 位置 | 该 deadline 的作用 |
 |---|---|
-| `test/unit.process.test.js` (12) | 停止升级链、并发序列化、句柄兜底、崩溃码识别 |
-| `test/unit.gate.test.js` (8) | 门闸串行化、drain 超时、队列上限、abort |
-| `test/unit.stale.test.js` (4) | 归因安全门、清理校验、死 pid 处理 |
-| `test/unit.args.test.js` (24) | 命令行 tokenizer、自动填充、冲突检测 |
-| `test/unit.config.test.js` (15) | 配置规范化、损坏配置降级 |
-| `scripts/e2e-ctrlc.mjs` | **真实 27B 模型**的 CTRL+C 优雅停止 + 显存释放 |
-| `scripts/e2e-orphan-recovery.mjs` | **真实 27B 模型**的残留进程安全门 + 清理 |
+| `gate.js` `drainTimer` | 在飞请求永不结束时，唯一能放行排队的独占切换者 |
+| `process.js` `_raceExit` | `stop()` / `killNow()` 等待进程退出的超时臂 |
+| `process.js` `_sendCtrlC` | CTRL+C 辅助进程卡死时的兜底 deadline |
+| `gateway.js` proxy timeout | 上游卡死时中止请求的 deadline |
+| `health.js` 端口探测 | `listen()` 不回话时结算探测的 deadline（并补上原先缺失的 `clearTimeout`） |
+| `test/unit.process.test.js` `FakeChild.exitAfter` | `stop()` 所等待的进程退出事件 |
 
-合计 **62 个单测**（约 3.8 秒），加两个需要真实模型的端到端脚本。
+**回归防线**：`test/unit.eventloop.test.js` 把验证放进一个**子进程**，该子进程只 await
+两个 deadline、别的什么都不做 —— 这样 runner 再也无法「顺手」撑住事件循环。修复前该子进程
+退出码 13，修复后退出 0。同文件还有一条源码级检查：禁止 `src/` 出现白名单外的 `unref()`。
+
+> 一般化：**测试通过不等于代码正确**。单元测试若通过只是因为「runner 恰好替我撑住了事件
+> 循环」，那它验证的是 runner 的行为，不是代码的行为。凡是「必须发生才会继续」的时序，
+> 都应在不受 runner 影响的进程里验证。
+
+---
+
+## F. 回归防线
+
+| 测试 | 用例数 | 覆盖 |
+|---|---|---|
+| `test/unit.args.test.js` | 23 | 命令行 tokenizer、自动填充、冲突检测 |
+| `test/unit.config.test.js` | 16 | 配置规范化、损坏配置降级 |
+| `test/unit.process.test.js` | 12 | 停止升级链、并发序列化、句柄兜底、崩溃码识别 |
+| `test/unit.gate.test.js` | 8 | 门闸串行化、drain 超时、队列上限、abort |
+| `test/unit.stale.test.js` | 5 | 归因安全门、清理校验、死 pid 处理 |
+| `test/unit.eventloop.test.js` | 2 | 子进程 deadline 存活 + `unref()` 白名单（见 E1） |
+| `scripts/e2e-ctrlc.mjs` | — | **真实 27B 模型**的 CTRL+C 优雅停止 + 显存释放 |
+| `scripts/e2e-orphan-recovery.mjs` | — | **真实 27B 模型**的残留进程安全门 + 清理 |
+
+合计 **66 个单测**（约 3.5 秒），加两个需要真实模型的端到端脚本。

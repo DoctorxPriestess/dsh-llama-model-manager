@@ -3,6 +3,26 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Lost deadlines under `unref()`.** A timer whose firing is the only way an
+  awaited promise can settle must not be `unref()`d: with nothing else holding
+  the event loop, Node drains the loop first, the deadline never fires, and the
+  wait is dropped (exit code 13 / `unsettled top-level await`; under
+  `node --test`, `Promise resolution is still pending but the event loop has
+  already resolved` / `cancelledByParent`). This is what made CI fail on Node 20
+  and 22 while passing on 24 — the newer runner happened to hold the loop open
+  and mask it. Affected deadlines: the gate's drain timer, `_raceExit`,
+  `_sendCtrlC`'s helper timeout, the gateway proxy timeout, the port probe (which
+  was also missing its `clearTimeout`), and the `FakeChild` test helper.
+  Regression-tested in a **child process** so the runner cannot mask it again
+  (`test/unit.eventloop.test.js`).
+- `test/unit.stale.test.js` used `import.meta.dirname`, which requires Node
+  20.11+, while the package declares a `>=20.10` floor. Replaced with
+  `fileURLToPath(new URL('..', import.meta.url))`.
+
 ## [1.0.0] — 2026-09-11
 
 Initial release.
