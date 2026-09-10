@@ -7,6 +7,74 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
+- **Operation failures looked like "nothing happened".** The 2 s status poll's
+  `refresh()` called `setError(null)` on success, so an error raised by a failed
+  save/load/restart was wiped within one round trip. The poll no longer clears
+  the error; it is cleared where a new operation starts or by dismissing it.
+- **Editing a second model could save onto the first one.** The model editor was
+  mounted without a `key`, so React reused the instance and its draft state kept
+  the previous model's fields while the title showed the new id -- saving then
+  wrote the stale id. It is now keyed by model id.
+- **`npm pack` shipped a machine-specific file.** `files: ["docs"]` pulled in the
+  gitignored `docs/ENVIRONMENT.md`, which records one machine's absolute paths,
+  usernames and crash-dump paths. `.gitignore` has no effect on files listed in
+  `files`. The entry is now `docs/ROBUSTNESS.md`.
+- **CI never validated the settings-page bundle.** `lib/client.js` is a
+  hand-written, build-step-free browser bundle that `npm test` does not load, so
+  a syntax error or a loader id that did not match the package name would make
+  the entire settings page vanish with no CI signal. CI now runs
+  `node --check lib/client.js` and asserts the registered id. The "every file
+  referenced by package.json exists" step also covers `main`/`exports` now, not
+  just `files`.
+- **A client disconnect could permanently wedge the gateway.** The proxy
+  acquired its shared inference ticket *without* an abort signal and attached the
+  disconnect bridge only afterwards -- so a client that hung up while queued
+  (behind another request, or behind a 40-50 s model load) had already fired
+  `close`, the late listener never ran, and `finally { release() }` was never
+  reached. With the default `maxConcurrentRequests: 1` no ticket could ever be
+  granted again: every later request queued and hung until the plugin was
+  restarted. The bridge is now attached *before* the acquire, the signal is
+  passed through, and the streaming await also settles on the source stream
+  (piping into an already-destroyed response never emits `close`/`finish` again).
+- **A crashed-spawn `error` event would have taken DSH down.** `start()` re-emitted
+  `child.on('error')` as `this.emit('error', ...)` on a wrapper that nobody
+  subscribes to, and Node *throws* for an unhandled `'error'` emit. Because this
+  plugin deliberately installs no `uncaughtException` handler, an asynchronous
+  spawn failure (AV/EDR lock, the exe vanishing between the pre-flight check and
+  `spawn`) would have crashed the whole harness. It is now recorded
+  (`proc.spawnError`) and surfaced in the stderr tail, and `waitForExit()` settles
+  on that path too -- its `_resolveExit` guard was dead code, so a failed spawn
+  used to leave the waiter pending forever.
+- **A stop that did not end the process was reported as a successful stop.**
+  `stop()` returns `exited: false` when the configured method could not end
+  llama-server -- notably `stopMethod: 'ctrl-c'`, which by design never forces --
+  but `_stopCurrent` ignored the field: it nulled `current`, deleted
+  `runtime.json` and reported `STOPPED` while a ~12 GB server was still running.
+  Deleting the record also destroyed the only thing the startup cleanup could
+  have used to find the process, and it blinded the exit handler in `index.js`.
+  The stop is now reported as a failure (`STOP_FAILED`), and `current` plus the
+  runtime record are kept so the process stays reachable. `shutdown()` escalates
+  to a forced kill (leaving is different from a user-requested unload) but keeps
+  the record if even that fails.
+- **A compressed upstream response was forwarded with stale framing headers.**
+  `fetch` transparently decodes gzip/deflate/br yet keeps `content-encoding` and
+  the original `content-length` in the response headers; forwarding both handed
+  the client a body described as "40 bytes, gzip" while actually being 5000
+  plaintext bytes, which the client rejects with a zlib error. The upstream
+  request now asks for `identity`, and both headers are dropped when proxying so
+  Node re-frames the response itself.
+- **Signal listeners could have taken away the user's ability to stop DSH.** The
+  plugin listened for `SIGINT`, `SIGTERM`, `SIGHUP` and `SIGBREAK`. Node removes
+  a signal's default "terminate the process" action as soon as the first JS
+  listener is added, and DSH only listens for `SIGINT`/`SIGTERM` itself — so
+  listening for `SIGHUP`/`SIGBREAK` silently removed Ctrl+Break (and
+  console-window-close) termination. Measured on Windows: a child with a
+  `SIGBREAK` listener survives a `CTRL_BREAK_EVENT`, while one without it exits
+  with `0xC000013A`. `SIGHUP`/`SIGBREAK` are now still handled, but they stop
+  `llama-server` and then reproduce the exit the OS would have performed
+  (`process.exit(0xC000013A)`, verified to produce exactly that status code);
+  re-raising is impossible because `process.kill(pid, 'SIGBREAK')` throws
+  `ENOSYS` on Windows. See `docs/ROBUSTNESS.md` §A6.
 - **`npm test` could not run on Node 20 at all.** The script was
   `node --test "test/*.test.js"`, and Node only began expanding globs in `--test`
   positional arguments in v21: on Node 20 the pattern is treated as a literal

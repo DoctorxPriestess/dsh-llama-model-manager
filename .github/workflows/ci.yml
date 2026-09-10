@@ -36,6 +36,22 @@ jobs:
       - name: Run tests
         run: npm test
 
+      - name: Client bundle sanity
+        shell: pwsh
+        run: |
+          # lib/client.js is a hand-written, build-step-free browser bundle that
+          # `npm test` never loads. A syntax error, or a loader id that does not
+          # match the package name, would make the whole settings page disappear
+          # without any other CI signal.
+          node --check lib/client.js
+          if ($LASTEXITCODE -ne 0) { throw 'lib/client.js failed node --check' }
+          $pkg = Get-Content package.json -Raw | ConvertFrom-Json
+          $bundle = Get-Content lib/client.js -Raw
+          if ($bundle -notmatch [regex]::Escape("id: '$($pkg.name)'")) {
+            throw "lib/client.js does not register id: '$($pkg.name)'"
+          }
+          Write-Host "client bundle ok (id=$($pkg.name))"
+
   package:
     name: Package sanity
     runs-on: windows-latest
@@ -61,17 +77,26 @@ jobs:
         shell: pwsh
         run: |
           $pkg = Get-Content package.json -Raw | ConvertFrom-Json
+          # `files` is what gets published; `main`/`exports` are what actually
+          # gets resolved at runtime, so a typo in either has to fail here.
+          $declared = @()
+          $declared += $pkg.files
+          if ($pkg.main) { $declared += $pkg.main }
+          if ($pkg.exports) {
+            foreach ($entry in $pkg.exports.PSObject.Properties) {
+              if ($entry.Value -is [string]) { $declared += $entry.Value }
+            }
+          }
           $missing = @()
-          foreach ($f in $pkg.files) {
-            if ($f -match '\.') {
-              if (-not (Test-Path $f)) { $missing += $f }
-            } elseif (-not (Test-Path $f)) { $missing += "$f/" }
+          foreach ($f in $declared) {
+            $rel = $f -replace '^\./', ''
+            if (-not (Test-Path $rel)) { $missing += $rel }
           }
           if ($missing.Count -gt 0) { throw "missing: $($missing -join ', ')" }
           foreach ($p in @('README.md','README.zh-CN.md','LICENSE','CHANGELOG.md','CONTRIBUTING.md','.gitignore','.gitattributes')) {
             if (-not (Test-Path $p)) { throw "missing $p" }
           }
-          Write-Host 'all declared files present'
+          Write-Host "all $($declared.Count) declared paths present"
 
       - name: No machine-specific paths committed
         shell: pwsh

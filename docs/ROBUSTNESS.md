@@ -80,6 +80,113 @@
 **修复**：新增 `_waitForProcessGone(pid, timeoutMs)`，以 250ms 间隔**有界轮询**
 （非忙等），先给 15 秒，失败再补一次不带 `/T` 的强杀并再等 10 秒。
 
+### A6. 注册信号监听器会**拿掉用户的逃生通道**
+
+**问题**：插件为 `SIGINT/SIGTERM/SIGHUP/SIGBREAK` 都注册了监听器。Node 的语义是
+**只要装了第一个监听器，该信号的「默认终止进程」行为就被移除**。所以：
+
+- `SIGINT/SIGTERM`：DSH 自己已经装了（`profile-boot` 的 `interrupt()` → 销毁 fiber），
+  默认行为早就没了，插件再装一个**不改变任何终止语义**。
+- `SIGHUP/SIGBREAK`：**DSH 没有装**。插件装上去就等于把 Ctrl+Break（以及关闭控制台窗口）
+  的终止能力**静默取消** —— 用户想强制结束 DSH 时会发现它死活不退。
+
+这与 A2（`uncaughtException` 吞掉宿主致命错误）是同一类错误：**插件不该改变宿主级行为**。
+
+**实测**（隐藏控制台 + `GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT)`，与真实 llama-server 同款启动方式）：
+
+| 子进程 | CTRL_BREAK_EVENT 之后 | 退出码 |
+|---|---|---|
+| 无监听器 | **被终止** | `3221225786` = `0xC000013A` (`STATUS_CONTROL_C_EXIT`) |
+| 装了 `SIGBREAK` 监听器 | 处理器触发，但**进程存活**（只能 SIGKILL） | — |
+
+**修复**：两组分开处理。`SIGINT/SIGTERM` 保持（只为尽早释放显存，语义上无副作用）；
+`SIGHUP/SIGBREAK` 在停掉子进程后**复现系统本该执行的退出**。
+
+复现方式也做了实测：`process.kill(pid, 'SIGBREAK')` 在 Windows 上抛 **`ENOSYS`**
+（无法重新触发信号），而 `process.exit(0xC000013A)` 让父进程观察到的退出码正是
+`3221225786` —— 与系统终止完全一致。
+
+> 局限：这条路径**没有自动化测试**。Windows 上无法给自己投递 `SIGBREAK`
+> （`ENOSYS`），所以只能在子进程 + 外部 `GenerateConsoleCtrlEvent` 的组合里验证，
+> 上面的表格就是那次验证的结果。
+
+### A7. 把子进程的 `error` 原样重发，会把整个 DSH 带走
+
+**问题**：`start()` 里写了
+
+```js
+child.once('error', (error) => { this.emit('error', error); });
+```
+
+而 `LlamaServerProcess` 是 EventEmitter，且**全项目没有任何地方**监听它的 `'error'`。Node 的
+语义是：**`'error'` 事件没有监听者时直接抛出**。抛点在 libuv 回调里 → 未捕获异常 → 而本插件
+**故意不装** `uncaughtException`（见 A2）→ **DSH 整个进程退出**。
+
+触发条件：`spawn` 之后的**异步**启动失败 —— 预检 `isExistingFile()` 与 `proc.start()` 之间 exe
+被改名/删除（TOCTOU）、被杀软/EDR 锁定（`EPERM/EACCES`）、镜像位数不对等。`spawn` 对 ENOENT
+不抛同步异常，只发 `'error'`，所以调用处的 `try/catch` 接不住。附带损害：同一次 `emit` 的后续
+监听器不再执行，原本要做的「标记 exited / 结算退出等待者」也被跳过。
+
+**实测**：修复前该断言报 `Got unwanted exception: must not throw ERR_UNHANDLED_ERROR`。
+
+**修复**：记录为 `proc.spawnError` 并写入 stderr 尾巴（否则启动失败只报 `exit code -1`，没有
+原因），只在**确实有监听者**时才重发。
+
+### A8. 停止失败被报成「已停止」，并销毁唯一的孤儿记录
+
+**问题**：`stop()` 在配置方法无法结束进程时返回 `{exited:false}` —— 尤其是
+`stopMethod:'ctrl-c'`（该模式**按设计从不强杀**，测试里正是断言 `exited === false`）。
+但 `_stopCurrent()` 不看这个字段，照样：
+
+```js
+if (this.current === entry) this.current = null;
+this._clearRuntimeState();     // ← 删掉 runtime.json
+this.setState(STATE.STOPPED);  // ← 声称已停
+```
+
+而进程还在跑，占着 ~12GB 显存和内部端口。**最严重的连带后果是删记录**：启动时的残留清理
+安全网靠 `runtime.json` 定位进程，记录一删就再也找不到它；同时 `index.js` 的退出兜底读的是
+`manager.current?.proc`，已为 `null`，于是 DSH 退出后进程无人清理。
+
+**修复**：区分两种语义。
+- 用户主动 unload/switch：**不越权强杀**（用户把 stopMethod 设成 `ctrl-c` 就是明确要求不要强杀），
+  但如实抛出 `STOP_FAILED`，并**保留** `current` 与 `runtime.json`。
+- `shutdown()`：这里确实要退出，留孤儿更糟，所以升级为强杀；**只有连强杀都失败**时才保留记录，
+  交给下次启动的残留清理。
+
+### A9. 客户端断开 → 共享票永久泄漏 → 网关从此不再服务任何请求
+
+**问题**：`_handleProxy` 取排他票时**没有传 signal**，而断开桥接挂在 `await` **之后**：
+
+```js
+const acquired = await this.manager.acquireForRequest(requestedModel, { reason });  // ← 没 signal
+...
+res.on('close', () => { if (!res.writableEnded) abortUpstream(); });                 // ← 挂晚了
+```
+
+客户端在排队期间（排在别的请求后面，或排在 40-50 秒的模型加载后面）断开时，`close` **早已触发**，
+晚挂的监听器永不执行 → `abortUpstream()` 永不调用 → 最终 `finally { release(); }` 也不执行。
+默认 `maxConcurrentRequests: 1` 下 `_activeReaders` 永远 ≥ 1，于是**任何推理票都无法再被授予**：
+之后每个请求都排队直到超时，直到插件重启为止。
+
+即便 `res` 已销毁，`stream.pipe(res)` 也不会再产生 `close`/`finish`，所以那个 await 永久悬挂。
+
+**修复**：三条一起做 —— 桥接移到 acquire **之前**、把 signal 传进 acquire、流式 await 同时以
+**源流的 `close`/`error`** 结算，并在 acquire 返回后补一道 `res.destroyed || signal.aborted`
+检查直接归还票。
+
+### A10. 压缩响应被按「已解压的实体 + 压缩的头部」转发
+
+**问题**：`fetch`（undici）会**透明解压** gzip/deflate/br，但 `content-encoding` 与原始
+`content-length` 仍留在 `response.headers` 里。原样复制给客户端，等于把一个 5000 字节明文
+描述成「40 字节、gzip」—— 客户端按 zlib 解压明文，直接报错。
+
+**修复**：上游请求显式要 `accept-encoding: identity`（这一跳是回环，压缩没有意义），并在转发
+响应时丢弃 `content-encoding` 与 `content-length`，让 Node 自己重新定帧（chunked）。
+
+> 一般化：**代理不等于透传**。只要中间任何一层会改写实体（解压、重编码、流式化），
+> 那么描述实体的头部就不再成立，必须由改写者重新生成。
+
 ---
 
 ## B. 进程安全（不误伤外部进程）
@@ -222,11 +329,21 @@ failureType: 'cancelledByParent'
 |---|---|---|
 | `test/unit.args.test.js` | 23 | 命令行 tokenizer、自动填充、冲突检测 |
 | `test/unit.config.test.js` | 16 | 配置规范化、损坏配置降级 |
-| `test/unit.process.test.js` | 12 | 停止升级链、并发序列化、句柄兜底、崩溃码识别 |
+| `test/unit.process.test.js` | 15 | 停止升级链、并发序列化、句柄兜底、崩溃码、`error` 事件不抛出、`waitForExit` 必结算 |
 | `test/unit.gate.test.js` | 8 | 门闸串行化、drain 超时、队列上限、abort |
 | `test/unit.stale.test.js` | 5 | 归因安全门、清理校验、死 pid 处理 |
+| `test/unit.stop.test.js` | 5 | 停止结果的 `exited` 契约（见 A8） |
+| `test/unit.gateway.test.js` | 2 | 压缩响应转发、客户端断开的票归还（见 C7/D3） |
 | `test/unit.eventloop.test.js` | 2 | 子进程 deadline 存活 + `unref()` 白名单（见 E1） |
 | `scripts/e2e-ctrlc.mjs` | — | **真实 27B 模型**的 CTRL+C 优雅停止 + 显存释放 |
 | `scripts/e2e-orphan-recovery.mjs` | — | **真实 27B 模型**的残留进程安全门 + 清理 |
 
-合计 **66 个单测**（约 3.5 秒），加两个需要真实模型的端到端脚本。
+合计 **76 个单测**（约 3.5 秒），加两个需要真实模型的端到端脚本。
+
+> 每个新回归测试都做过**反向验证**：把对应修复 `git stash` 掉再跑，确认它真的会失败
+> （例如 A7 的测试在修复前报 `Got unwanted exception: must not throw ERR_UNHANDLED_ERROR`，
+> A8 报 `Missing expected rejection`，C7 报 `the ticket must be handed back exactly once`）。
+> **一条永远通过的断言比没有断言更危险。**
+
+完整的三轮只读复审发现（含尚未修复项及其严重级别）记录在
+[`KNOWN-ISSUES.md`](KNOWN-ISSUES.md)。

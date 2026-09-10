@@ -25,7 +25,7 @@
     "lib",
     "cordis.patch.yml",
     "examples",
-    "docs",
+    "docs/ROBUSTNESS.md",
     "README.md",
     "LICENSE",
     "CHANGELOG.md"

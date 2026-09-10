@@ -142,8 +142,14 @@ export class LlamaServerProcess extends EventEmitter {
     this.pid = child.pid ?? null;
     this.spawnedAt = Date.now();
 
+    // One place that settles "the process is gone", so waitForExit() can never
+    // hang. A child that fails to spawn emits 'error' and NEVER 'exit', and the
+    // previous code left _exitPromise pending forever in that case -- its
+    // `_resolveExit` guard was dead code, since nothing ever assigned it.
+    let settleExit = null;
     this._exitPromise = new Promise((resolve) => {
-      child.once('exit', (code, signal) => {
+      settleExit = (code, signal) => {
+        if (this.exited) return; // never settle twice, never emit 'exit' twice
         this.exited = true;
         this.exitCode = code === null || code === undefined ? null : code;
         this.exitSignal = signal ?? null;
@@ -151,9 +157,26 @@ export class LlamaServerProcess extends EventEmitter {
         this._flushRemainders();
         this.emit('exit', { code: this.exitCode, signal: this.exitSignal, pid: this.pid });
         resolve({ code: this.exitCode, signal: this.exitSignal });
-      });
+      };
+      child.once('exit', (code, signal) => settleExit(code, signal));
       child.once('error', (error) => {
-        this.emit('error', error);
+        // NEVER re-emit 'error' unconditionally. LlamaServerProcess extends
+        // EventEmitter, nothing subscribes to its 'error' event, and Node THROWS
+        // when 'error' is emitted with no listener. That throw would happen
+        // inside a libuv callback, i.e. as an uncaught exception -- and this
+        // plugin deliberately installs no `uncaughtException` handler, so the
+        // whole DSH process would go down with it. (It would also skip the
+        // exit bookkeeping registered below, because a throwing listener
+        // aborts the remaining listeners for that emit.)
+        this.spawnError = error;
+        try {
+          // Surface it as a stderr line so a failed spawn explains itself
+          // instead of only reporting "exit code -1".
+          this._recordLine('stderr', this.stderrLines, `spawn error: ${error?.message ?? String(error)}`);
+        } catch {
+          /* diagnostics must never throw */
+        }
+        if (this.listenerCount('error') > 0) this.emit('error', error);
       });
     });
 
@@ -168,14 +191,9 @@ export class LlamaServerProcess extends EventEmitter {
       child.stderr.on('error', () => {});
     }
     child.on('error', () => {
-      // 'exit' may never fire when spawn itself failed; resolve the waiter.
-      if (!this.exited) {
-        this.exited = true;
-        this.exitCode = this.exitCode ?? -1;
-        this.exitedAt = Date.now();
-        this.emit('exit', { code: this.exitCode, signal: null, pid: this.pid });
-        if (this._resolveExit) this._resolveExit({ code: this.exitCode, signal: null });
-      }
+      // 'exit' may never fire when spawn itself failed; settle the waiter here.
+      // settleExit() ignores the call if the process already exited.
+      settleExit(this.exitCode ?? -1, null);
     });
 
     return child;
@@ -214,7 +232,15 @@ export class LlamaServerProcess extends EventEmitter {
    * @param {{graceMs?: number, reason?: string, logger?: object, method?: 'ctrl-c'|'taskkill'|'auto'}} [options]
    */
   async stop(options = {}) {
-    if (this.exited || !this.pid) return { alreadyExited: true, code: this.exitCode };
+    // Report `exited` on every path: callers must be able to tell "nothing is
+    // running any more" from "the stop did not work".
+    if (this.exited) {
+      return { alreadyExited: true, exited: true, forced: false, method: 'already-exited', code: this.exitCode };
+    }
+    if (!this.pid) {
+      // Never spawned: there is no process to wait for.
+      return { alreadyExited: true, exited: true, forced: false, method: 'never-started', code: null };
+    }
     if (this._stopPromise) return this._stopPromise;
     const running = this._stopInternal(options);
     // Store before awaiting so a concurrent caller joins this exact operation.

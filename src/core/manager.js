@@ -264,6 +264,13 @@ export class LlamaModelManager extends EventEmitter {
           logger: this.log,
           method: this.config.settings.stopMethod,
         });
+        if (!this._isGone(current)) {
+          // The configured method did not end it. Unlike a user-requested
+          // unload or switch, we ARE leaving here: an orphan would hold the
+          // VRAM and the internal port with nobody left to stop it, so escalate.
+          this.log.warn(`[manager] llama-server pid=${current.proc.pid} did not exit; forcing it down before we go`);
+          await current.proc.killNow(reason);
+        }
       } catch (error) {
         this.log.warn(`[manager] stop during shutdown failed: ${error.message}`);
         try {
@@ -273,9 +280,21 @@ export class LlamaModelManager extends EventEmitter {
         }
       }
     }
-    this.current = null;
-    this.setState(STATE.STOPPED);
-    this._clearRuntimeState();
+
+    if (current && !this._isGone(current)) {
+      // Even a forced kill failed. Keep the entry and runtime.json: the exit
+      // handler in index.js reaches the child through manager.current, and the
+      // next startup's leftover-process cleanup needs the record.
+      this.log.error(
+        `[manager] llama-server pid=${current.proc?.pid} survived shutdown; ` +
+          'keeping runtime.json so the next startup can clean it up',
+      );
+      this.setState(STATE.ERROR, { modelId: current.model?.id });
+    } else {
+      this.current = null;
+      this.setState(STATE.STOPPED);
+      this._clearRuntimeState();
+    }
     this.log.info('[manager] shutdown complete');
   }
 
@@ -767,13 +786,42 @@ export class LlamaModelManager extends EventEmitter {
       logger: this.log,
       method: this.config.settings.stopMethod,
     });
+
+    // stop() reports exited:false when the configured method could not end the
+    // process -- notably stopMethod:'ctrl-c', which by design never forces.
+    // Treating that as success would null out `current` and delete runtime.json
+    // while a ~12 GB llama-server is still running; deleting the record also
+    // destroys the only thing the startup safety net could use to find it, and
+    // it blinds the exit handler in index.js (which reads manager.current).
+    // Forcing is deliberately NOT decided here: 'ctrl-c' means the user asked us
+    // not to force. Report the failure and keep everything reachable instead.
+    if (!this._isGone(entry)) {
+      const detail = result.error ?? `stop method '${result.method ?? 'unknown'}' did not end the process`;
+      this.log.error(`[manager] llama-server pid=${entry.proc.pid} is STILL RUNNING: ${detail}`);
+      this.setState(STATE.ERROR, { modelId: entry.model.id });
+      throw new ModelUnavailableError(
+        `无法结束 llama-server（pid=${entry.proc.pid}）：${detail}。` +
+          '它可能仍占用内部端口与显存；可在设置页重试，或把 stopMethod 改为 taskkill。',
+        {
+          code: 'STOP_FAILED',
+          detail: { pid: entry.proc.pid, method: result.method ?? null, delivered: result.delivered ?? null },
+        },
+      );
+    }
+
     this.log.info(
-      `[manager] llama-server exited code=${entry.proc.exitCode ?? 'null'}${result.forced ? ` (forced via ${result.method})` : ` (graceful via ${result.method})`}`,
+      `[manager] llama-server exited code=${entry.proc.exitCode ?? 'null'}` +
+        (result.forced ? ` (forced via ${result.method})` : ` (graceful via ${result.method ?? 'unknown'})`),
     );
     if (this.current === entry) this.current = null;
     this._clearRuntimeState();
     this.setState(STATE.STOPPED);
     return { stopped: true, code: entry.proc.exitCode, forced: !!result.forced, method: result.method ?? null };
+  }
+
+  /** True when no live llama-server is behind this entry any more. */
+  _isGone(entry) {
+    return !entry?.proc || entry.proc.exited || !entry.proc.pid;
   }
 
   /** Unexpected exit of a READY server. */

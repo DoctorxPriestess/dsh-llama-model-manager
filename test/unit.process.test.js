@@ -230,3 +230,52 @@ test('the last-resort kill uses the child handle, never a bare pid', async () =>
   assert.deepEqual(handleKills, ['SIGKILL'], 'fallback must go through the child handle');
   assert.equal(barePidKillAttempted, false, 'must never call process.kill(pid) -- pid recycling hazard');
 });
+
+test('a spawn error never throws out of the wrapper and still settles waitForExit()', async () => {
+  // Regression: this used to be `this.emit('error', error)` on a wrapper that
+  // nobody subscribes to. Node THROWS for an unhandled 'error' emit, and the
+  // throw happens inside a libuv callback -- i.e. an uncaught exception. This
+  // plugin installs no `uncaughtException` handler on purpose, so the whole DSH
+  // process would have died. The throw also aborted the remaining listeners for
+  // that emit, skipping the exit bookkeeping.
+  const { proc, child } = makeProc({ ctrlC: { ok: true } });
+
+  assert.doesNotThrow(() => child.emit('error', new Error('spawn EPERM')), 'must not throw ERR_UNHANDLED_ERROR');
+
+  assert.equal(proc.spawnError?.message, 'spawn EPERM', 'the spawn error is recorded');
+  assert.equal(proc.exited, true, 'a failed spawn counts as exited');
+
+  // Before the fix this promise never settled: _exitPromise was only resolved by
+  // the child's 'exit' event, which never fires for a failed spawn, and its
+  // `_resolveExit` guard was dead code.
+  const info = await proc.waitForExit();
+  assert.equal(info.code, -1, 'a failed spawn reports exit code -1');
+
+  assert.match(
+    proc.tail(5).join('\n'),
+    /spawn error: spawn EPERM/,
+    'the reason must reach the stderr tail, or startup failures report only "exit code -1"',
+  );
+});
+
+test('emitting "error" on the wrapper still works when somebody does listen', async () => {
+  const { proc, child } = makeProc({ ctrlC: { ok: true } });
+  const seen = [];
+  proc.on('error', (error) => seen.push(error.message));
+
+  child.emit('error', new Error('boom'));
+
+  assert.deepEqual(seen, ['boom'], 'a real listener must still receive it');
+});
+
+test('stop() reports exited:true when there is nothing to stop', async () => {
+  // Callers decide whether to clear their bookkeeping based on `exited`; every
+  // early-return path has to answer that question explicitly.
+  const { proc, child } = makeProc({ ctrlC: { ok: true } });
+  child.emit('exit', 0, null);
+
+  const result = await proc.stop({ graceMs: 10, method: 'auto' });
+  assert.equal(result.alreadyExited, true);
+  assert.equal(result.exited, true);
+  assert.equal(result.method, 'already-exited');
+});

@@ -149,14 +149,50 @@ export async function apply(ctx, pluginConfig = {}) {
     'llama-model-manager: stop llama-server on unload',
   );
 
-  // Ctrl+C / termination while DSH is running: stop the child before we go.
-  const onSignal = () => {
-    void runtime.stop({ reason: 'process signal' }).catch(() => {});
+  // ── signal handling ──────────────────────────────────────────────────────
+  //
+  // Node removes a signal's default "terminate this process" action as soon as
+  // the FIRST JS listener is added, so which signals we listen for decides
+  // whether the user can still stop DSH. The two groups are not alike:
+  //
+  //   SIGINT / SIGTERM -- DSH already listens for these itself (profile-boot
+  //     calls interrupt() -> fiber dispose, which also runs the disposer below).
+  //     The default action was therefore already gone before we got here, and
+  //     adding our listener cannot take anything else away. Kept because
+  //     stopping llama-server at the very start of shutdown releases ~12 GB of
+  //     VRAM sooner.
+  //
+  //   SIGHUP / SIGBREAK -- DSH does NOT listen for these. Listening for them
+  //     would silently suppress termination: measured on Windows, a child with a
+  //     SIGBREAK listener survives a CTRL_BREAK_EVENT (and has to be force
+  //     killed) while one without it exits with 0xC000013A. That would remove
+  //     the Ctrl+Break escape hatch and leave DSH running after its console
+  //     window is closed. So these stop the child and then reproduce the exit
+  //     the OS would otherwise have performed. Re-raising is not an option --
+  //     `process.kill(pid, 'SIGBREAK')` throws ENOSYS on Windows -- but
+  //     process.exit(0xC000013A) was measured to produce that exact status code.
+  const STATUS_CONTROL_C_EXIT = 0xc000013a;
+
+  const registerSignal = (signal, exitCode) => {
+    const handler = () => {
+      const stopping = runtime.stop({ reason: `process signal ${signal}` }).catch(() => {});
+      if (exitCode === null) {
+        void stopping;
+        return;
+      }
+      void stopping.then(() => process.exit(exitCode));
+    };
+    process.on(signal, handler);
+    ctx.effect(
+      () => () => process.removeListener(signal, handler),
+      `llama-model-manager: ${signal} handler`,
+    );
   };
-  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']) {
-    process.on(signal, onSignal);
-    ctx.effect(() => () => process.removeListener(signal, onSignal), `llama-model-manager: ${signal} handler`);
-  }
+
+  registerSignal('SIGINT', null); // DSH terminates on its own; free VRAM early
+  registerSignal('SIGTERM', null);
+  registerSignal('SIGHUP', STATUS_CONTROL_C_EXIT); // console window closed
+  registerSignal('SIGBREAK', STATUS_CONTROL_C_EXIT); // Ctrl+Break
 
   /**
    * Stop the child synchronously. Used from fatal paths where we cannot await.
@@ -175,12 +211,17 @@ export async function apply(ctx, pluginConfig = {}) {
   };
 
   // NOTE: we deliberately do NOT install `uncaughtException` /
-  // `unhandledRejection` listeners. DSH does not install any of its own, so
-  // adding one here would silently change host-wide behaviour: a fatal error
-  // that would normally crash DSH would instead be swallowed and leave the
-  // harness running in an unknown state. Orphan prevention does not need them
-  // either -- the 'exit' handler below runs for crash exits as well, and the
-  // leftover-process safety net covers the hard-kill cases.
+  // `unhandledRejection` listeners, because either one would change host-wide
+  // behaviour:
+  //   - `uncaughtException`: DSH installs none of its own, so adding one here
+  //     would turn a fatal error that would normally crash DSH into a silent
+  //     continuation, leaving the harness in an unknown state.
+  //   - `unhandledRejection`: DSH DOES install one (dsh-app-boot's
+  //     installFailLoud) which prints a fatal error and exits 1; adding a second
+  //     listener only risks masking that.
+  // Orphan prevention does not need either: the 'exit' handler below runs for
+  // ordinary and crash exits, and the leftover-process safety net covers the
+  // hard-kill cases where no handler runs at all.
   // Last resort: a synchronous kill on hard exit, so no orphan keeps GPU memory.
   const onExit = () => {
     killChildSync();

@@ -295,20 +295,49 @@ export class Gateway {
       requestedModel = status.currentModel;
     }
 
-    const acquired = await this.manager.acquireForRequest(requestedModel, {
-      reason: `proxy ${req.method} ${pathname}`,
-    });
-    const release = acquired.release;
+    // Attach the disconnect bridge BEFORE acquiring the gate ticket, and pass
+    // the signal into the acquire. If the client goes away while queued (behind
+    // another request, or behind a 40-50 s model switch) then 'close' has
+    // ALREADY fired by the time acquireForRequest() resolves -- a listener added
+    // afterwards never runs. The ticket would then never be released, and with
+    // the default maxConcurrentRequests: 1 no inference ticket could ever be
+    // granted again: a permanently wedged gateway.
     const controller = new AbortController();
-    const untrack = this.manager.trackInflight(controller);
-    let timer = null;
-
     const abortUpstream = () => {
       if (!controller.signal.aborted) controller.abort(new Error('client disconnected'));
     };
     res.on('close', () => {
       if (!res.writableEnded) abortUpstream();
     });
+    res.on('error', () => {
+      /* the socket is gone; the close handler above already dealt with it */
+    });
+
+    let acquired;
+    try {
+      acquired = await this.manager.acquireForRequest(requestedModel, {
+        reason: `proxy ${req.method} ${pathname}`,
+        signal: controller.signal,
+      });
+    } catch (error) {
+      if (controller.signal.aborted) {
+        if (!res.headersSent && !res.writableEnded) {
+          writeError(res, 499, '客户端已断开，请求已取消。', { code: 'CLIENT_DISCONNECTED' });
+        }
+        return;
+      }
+      throw error;
+    }
+
+    const release = acquired.release;
+    if (res.destroyed || controller.signal.aborted) {
+      // Disconnected in the instant between the grant and here: hand the ticket
+      // straight back instead of holding it for a response nobody will read.
+      release();
+      return;
+    }
+    const untrack = this.manager.trackInflight(controller);
+    let timer = null;
 
     try {
       const upstream = this.manager.current;
@@ -338,7 +367,14 @@ export class Gateway {
 
       res.statusCode = response.status;
       for (const [key, value] of response.headers) {
-        if (HOP_BY_HOP.has(key.toLowerCase())) continue;
+        const lower = key.toLowerCase();
+        if (HOP_BY_HOP.has(lower)) continue;
+        // `fetch` decodes gzip/deflate/br transparently but leaves
+        // `content-encoding` AND the original `content-length` in
+        // response.headers. Forwarding them would describe a 5000-byte
+        // plaintext body as "40 bytes, gzip" -- the client then fails with a
+        // zlib error. Dropping both lets Node re-frame the response itself.
+        if (lower === 'content-encoding' || lower === 'content-length') continue;
         try {
           res.setHeader(key, value);
         } catch {
@@ -361,6 +397,16 @@ export class Gateway {
       await new Promise((resolve) => {
         res.on('close', resolve);
         res.on('finish', resolve);
+        // Settle on the SOURCE too. Piping into an already-destroyed response
+        // never emits 'close' or 'finish' again, and the source then just pauses
+        // waiting for a drain that never comes -- which used to leave this await
+        // (and therefore the ticket release in `finally`) pending forever.
+        stream.on('close', resolve);
+        stream.on('error', resolve);
+        if (res.destroyed || res.writableEnded) {
+          stream.destroy();
+          return resolve();
+        }
         stream.pipe(res);
       });
     } catch (error) {
@@ -406,9 +452,16 @@ function buildUpstreamHeaders(headers) {
     const lower = key.toLowerCase();
     if (HOP_BY_HOP.has(lower)) continue;
     if (lower === 'host' || lower === 'content-length') continue;
+    // Ask for an UNCOMPRESSED upstream response. `fetch` (undici) transparently
+    // decodes gzip/deflate/br, so a compressed upstream would reach us decoded
+    // but still labelled `content-encoding: gzip` with the original
+    // content-length -- which we cannot faithfully forward. identity removes the
+    // whole class of problem, and this hop is loopback anyway.
+    if (lower === 'accept-encoding') continue;
     if (value === undefined) continue;
     result[key] = Array.isArray(value) ? value.join(', ') : String(value);
   }
+  result['accept-encoding'] = 'identity';
   return result;
 }
 
