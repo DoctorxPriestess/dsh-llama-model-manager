@@ -99,6 +99,12 @@ test('a client that disconnects while queued does not leak its gate ticket', asy
   // gone. A never-ending upstream body is what makes the old code hang forever
   // (piping into a destroyed response never emits 'close' or 'finish' again), so
   // the `finally { release() }` never ran and the ticket leaked for good.
+  //
+  // Determinism matters here: the first version of this test raced a fixed sleep
+  // against the socket teardown and was flaky (it passed locally and on two CI
+  // legs, then failed on the third). Instead of racing, the stub waits for the
+  // abort to be OBSERVED -- the gateway passes the signal in, so "the client is
+  // gone" is a fact we can synchronise on rather than a timing guess.
   let releaseCalled = 0;
   const release = () => {
     releaseCalled += 1;
@@ -112,10 +118,31 @@ test('a client that disconnects while queued does not leak its gate ticket', asy
   const manager = makeManager({
     current: { connectHost: '127.0.0.1', port: 1 },
     fetchImpl: async () => new Response(neverEnding, { status: 200 }),
-    acquireForRequest: async () => {
-      // Simulates waiting behind a 40-50 s model load, then winning the ticket
-      // only after the caller has already hung up.
-      await sleep(150);
+    acquireForRequest: async (model, opts = {}) => {
+      const signal = opts.signal;
+      await new Promise((resolve) => {
+        const bound = setTimeout(resolve, 3000); // bounded: never hang the suite
+        if (!signal) {
+          // Pre-fix code passed no signal; fall back to a short wait so the
+          // test still fails (rather than hangs) against it.
+          clearTimeout(bound);
+          setTimeout(resolve, 150);
+          return;
+        }
+        if (signal.aborted) {
+          clearTimeout(bound);
+          return resolve();
+        }
+        signal.addEventListener(
+          'abort',
+          () => {
+            clearTimeout(bound);
+            resolve();
+          },
+          { once: true },
+        );
+      });
+      // Grant the ticket anyway: the point is that the caller is already gone.
       return { model: { id: 'm1' }, release };
     },
   });
@@ -123,19 +150,18 @@ test('a client that disconnects while queued does not leak its gate ticket', asy
   const { gateway, port } = await startGateway(manager);
 
   try {
-    await new Promise((resolve) => {
-      const req = http.request(
-        { host: '127.0.0.1', port, path: '/echo', method: 'GET' },
-        () => resolve(),
-      );
+    const closed = new Promise((resolve) => {
+      const req = http.request({ host: '127.0.0.1', port, path: '/echo', method: 'GET' }, () => resolve());
       req.on('error', () => resolve()); // ECONNRESET after we destroy it
       req.end();
-      // Hang up while the acquire is still pending.
-      setTimeout(() => req.destroy(), 30);
+      setTimeout(() => req.destroy(), 20);
     });
+    await closed;
 
-    // Give the acquire() time to resolve with the client already gone.
-    await sleep(400);
+    // Bounded wait for the ticket to come back, then assert (never sleeps a
+    // fixed amount hoping the ordering worked out).
+    const deadline = Date.now() + 4000;
+    while (releaseCalled === 0 && Date.now() < deadline) await sleep(25);
 
     assert.equal(releaseCalled, 1, 'the ticket must be handed back exactly once, not leaked');
   } finally {
