@@ -3,7 +3,13 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.1] — 2026-09-11
+
+A correctness release. Four defects found by a full review could each take down
+the host, wedge the gateway, or leave a ~12 GB `llama-server` running with no
+record of it; `npm test` also could not run at all on Node 20. Every fix below is
+covered by a regression test, and each new test was verified in reverse (the fix
+was reverted and the test was watched to fail) so none of them is a tautology.
 
 ### Documentation
 
@@ -169,4 +175,5 @@ documented with their trigger conditions and verification in
 - The final kill fallback used a bare pid; it now uses the child handle, so a
   recycled pid can never terminate an unrelated process.
 
+[1.0.1]: https://github.com/DoctorxPriestess/dsh-llama-model-manager/releases/tag/v1.0.1
 [1.0.0]: https://github.com/DoctorxPriestess/dsh-llama-model-manager/releases/tag/v1.0.0

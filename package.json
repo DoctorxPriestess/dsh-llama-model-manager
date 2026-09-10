@@ -1,6 +1,6 @@
 {
   "name": "dsh-llama-model-manager",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "DSH plugin: manages the Windows llama-server.exe model lifecycle (start / stop / switch / recover) behind a stable OpenAI-compatible gateway, with graceful Ctrl+C shutdown that actually frees VRAM.",
   "license": "MIT",
