@@ -1,40 +1,39 @@
-{
-  "_comment": [
-    "The slice of DSH's settings.yaml you need so DSH talks to this plugin's gateway.",
-    "Location: %USERPROFILE%\\.dsh\\settings.yaml",
-    "",
-    "The plugin NEVER reads or writes this file -- it is shown here only so you know",
-    "what to add. YAML supports comments, so you can keep this block in the real file.",
-    "",
-    "The model ids under `models:` must match the ids configured in the plugin."
-  ],
-  "providers": {
-    "llamacpp": {
-      "displayName": "llama.cpp 本地",
-      "apiKeyEnv": "LLAMACPP_API_KEY",
-      "baseURL": "http://127.0.0.1:8080/v1",
-      "models": {
-        "qwen38-iq3s": {
-          "displayName": "Qwen3.8-27B IQ3_S"
-        },
-        "qwen38-apex-nano": {
-          "displayName": "Qwen3.8-27B APEX-I-Nano"
-        }
-      },
-      "modelOverrides": {}
-    }
-  },
-  "_yaml": [
-    "In actual YAML this reads:",
-    "",
-    "providers:",
-    "  llamacpp:",
-    "    displayName: llama.cpp 本地",
-    "    apiKeyEnv: LLAMACPP_API_KEY",
-    "    baseURL: http://127.0.0.1:8080/v1",
-    "    models:",
-    "      qwen38-iq3s:",
-    "        displayName: Qwen3.8-27B IQ3_S",
-    "    modelOverrides: {}"
-  ]
-}
+# The slice of DSH's settings.yaml that makes DSH talk to this plugin's gateway.
+#
+# Location: %USERPROFILE%\.dsh\settings.yaml
+#
+# The plugin NEVER reads or writes this file -- it is shown here only so you know
+# what to add. YAML supports comments, so you can keep this block in the real file.
+#
+# Prefer the settings page's "Integration guide -> Copy YAML", which generates
+# this block already filled in from the models you configured.
+
+llm-pi-ai: # the plugin namespace: `providers` lives UNDER it, not at the top level
+  providers:
+    llamacpp:
+      displayName: llama.cpp 本地
+      api: openai-completions
+      apiKeyEnv: LLAMACPP_API_KEY
+      baseURL: http://127.0.0.1:8080/v1
+
+      # `models` is a LIST of {id, name, ...} -- not a map, and there is no
+      # per-model `displayName`. Each `id` must match an id configured in the plugin.
+      models:
+        - id: qwen38-iq3s
+          name: Qwen3.8-27B IQ3_S
+          contextWindow: 131072
+          input:
+            - text
+          reasoningEfforts:
+            off: null
+            low: low
+            medium: medium
+            high: high
+            xhigh: xhigh
+
+        - id: qwen38-apex-nano
+          name: Qwen3.8-27B APEX-I-Nano
+          contextWindow: 131072
+          input:
+            - text
+            - image # the model is launched with --mmproj

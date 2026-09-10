@@ -143,16 +143,7 @@ connections or body inactivity.
 *Fix:* a few MiB default, read the body after the ticket/token check, set
 `server.maxConnections`, and add a body-inactivity timeout.
 
-### M13. README / example DSH provider snippet is wrong
-`README.md`, `README.zh-CN.md`, `examples/dsh-provider.example.yml` show
-`providers:` at the top level with `models` as a **map** carrying `displayName`.
-The real DSH shape nests it under `llm-pi-ai:` and takes `models` as a **list** of
-`{id, name, contextWindow?, …}`. The plugin's own settings page already generates
-the correct form, so the docs contradict the UI — copying the README cannot work.
-
-*Fix:* replace the snippet with the settings page's "copy YAML" output.
-
-### M14. Model-id rename duplicates instead of renaming
+### M13. Model-id rename duplicates instead of renaming
 `lib/client.js` + `src/core/api.js` — saving an edit whose id changed PUTs to the
 old id with a new-id body, which upserts the **new** key and leaves the old one.
 Two records then point at the same GGUF and `findModel`'s path match hits

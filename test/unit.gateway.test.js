@@ -100,12 +100,17 @@ test('a client that disconnects while queued does not leak its gate ticket', asy
   // (piping into a destroyed response never emits 'close' or 'finish' again), so
   // the `finally { release() }` never ran and the ticket leaked for good.
   //
-  // Determinism matters here: the first version of this test raced a fixed sleep
-  // against the socket teardown and was flaky (it passed locally and on two CI
-  // legs, then failed on the third). Instead of racing, the stub waits for the
-  // abort to be OBSERVED -- the gateway passes the signal in, so "the client is
-  // gone" is a fact we can synchronise on rather than a timing guess.
+  // Two earlier versions of this test were flaky on CI (it flipped between legs
+  // across runs) and both failures were informative:
+  //   1. it raced a fixed sleep against the socket teardown;
+  //   2. even after synchronising on the abort, it hung up 20 ms after sending,
+  //      which on a loaded runner can be BEFORE the server parsed the request --
+  //      so the handler never ran and nothing could be released.
+  // Both are fixed by not guessing at all: wait until the gateway is observably
+  // parked in acquireForRequest(), and only then drop the client.
   let releaseCalled = 0;
+  let acquireEntered = false;
+  let abortObserved = false;
   const release = () => {
     releaseCalled += 1;
   };
@@ -119,9 +124,11 @@ test('a client that disconnects while queued does not leak its gate ticket', asy
     current: { connectHost: '127.0.0.1', port: 1 },
     fetchImpl: async () => new Response(neverEnding, { status: 200 }),
     acquireForRequest: async (model, opts = {}) => {
+      acquireEntered = true;
       const signal = opts.signal;
       await new Promise((resolve) => {
-        const bound = setTimeout(resolve, 3000); // bounded: never hang the suite
+        // Bounded so a regression fails the test instead of hanging the suite.
+        const bound = setTimeout(resolve, 3000);
         if (!signal) {
           // Pre-fix code passed no signal; fall back to a short wait so the
           // test still fails (rather than hangs) against it.
@@ -130,12 +137,14 @@ test('a client that disconnects while queued does not leak its gate ticket', asy
           return;
         }
         if (signal.aborted) {
+          abortObserved = true;
           clearTimeout(bound);
           return resolve();
         }
         signal.addEventListener(
           'abort',
           () => {
+            abortObserved = true;
             clearTimeout(bound);
             resolve();
           },
@@ -150,20 +159,32 @@ test('a client that disconnects while queued does not leak its gate ticket', asy
   const { gateway, port } = await startGateway(manager);
 
   try {
-    const closed = new Promise((resolve) => {
+    const done = new Promise((resolve) => {
       const req = http.request({ host: '127.0.0.1', port, path: '/echo', method: 'GET' }, () => resolve());
-      req.on('error', () => resolve()); // ECONNRESET after we destroy it
+      req.on('error', () => resolve()); // ECONNRESET after we hang up
       req.end();
-      setTimeout(() => req.destroy(), 20);
-    });
-    await closed;
 
-    // Bounded wait for the ticket to come back, then assert (never sleeps a
-    // fixed amount hoping the ordering worked out).
+      // Only hang up once the request has definitely been received and the
+      // gateway is waiting on the ticket -- never on a timer.
+      const waitForHandler = setInterval(() => {
+        if (!acquireEntered) return;
+        clearInterval(waitForHandler);
+        req.destroy();
+      }, 10);
+      setTimeout(() => clearInterval(waitForHandler), 5000).unref?.();
+    });
+    await done;
+
+    // Bounded wait for the ticket to come back, then assert.
     const deadline = Date.now() + 4000;
     while (releaseCalled === 0 && Date.now() < deadline) await sleep(25);
 
-    assert.equal(releaseCalled, 1, 'the ticket must be handed back exactly once, not leaked');
+    assert.equal(
+      releaseCalled,
+      1,
+      `the ticket must be handed back exactly once, not leaked ` +
+        `(acquireEntered=${acquireEntered}, abortObserved=${abortObserved})`,
+    );
   } finally {
     await gateway.close();
   }

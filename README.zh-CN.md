@@ -90,14 +90,23 @@ dsh plugin --profile web add github:DoctorxPriestess/dsh-llama-model-manager
 然后把 DSH 的 provider 指向本 Gateway。在 `%USERPROFILE%\.dsh\settings.yaml` 中：
 
 ```yaml
-providers:
-  llamacpp:
-    displayName: llama.cpp 本地
-    baseURL: http://127.0.0.1:8080/v1
-    models:
-      qwen38-iq3s:          # 与插件里配置的模型 ID 保持一致
-        displayName: Qwen3.8-27B IQ3_S
+llm-pi-ai: # 插件命名空间：providers 在它下面，不是顶层
+  providers:
+    llamacpp:
+      displayName: llama.cpp 本地
+      api: openai-completions
+      apiKeyEnv: LLAMACPP_API_KEY
+      baseURL: http://127.0.0.1:8080/v1
+      models: # 这是 {id, name, ...} 的「列表」，不是 map；也没有模型级 displayName
+        - id: qwen38-iq3s # 必须与插件里配置的模型 ID 一致
+          name: Qwen3.8-27B IQ3_S
+          contextWindow: 131072
+          input:
+            - text # 带 mmproj 启动的模型再加一行 image
 ```
+
+> 设置页的**集成指引 → 复制 YAML** 生成的就是这段，并且已按你配置的模型填好，
+> 比手抄更靠谱。
 
 > 插件**从不**读写 DSH 的 `settings.yaml`。那个文件完全归你。
 

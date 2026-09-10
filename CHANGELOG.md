@@ -5,6 +5,18 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Documentation
+
+- **The DSH provider snippet in both READMEs was wrong**, and so was
+  `examples/dsh-provider.example.yml`: they showed `providers:` at the top level
+  with `models` as a *map* carrying a per-model `displayName`. The real shape nests
+  `providers` under the `llm-pi-ai:` namespace and takes `models` as a *list* of
+  `{id, name, …}`. Copying the README therefore could not work, and it
+  contradicted the plugin's own settings page, which had been generating the
+  correct form all along. Both READMEs now show the real shape and point at
+  **Integration guide → Copy YAML**; the example file is real YAML with comments
+  instead of JSON with a duplicated `_yaml` string.
+
 ### Fixed
 
 - **Operation failures looked like "nothing happened".** The 2 s status poll's

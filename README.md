@@ -95,14 +95,23 @@ Open **Settings → 本地模型管理** and fill in two things:
 Then point a DSH provider at the gateway. In `%USERPROFILE%\.dsh\settings.yaml`:
 
 ```yaml
-providers:
-  llamacpp:
-    displayName: llama.cpp local
-    baseURL: http://127.0.0.1:8080/v1
-    models:
-      qwen38-iq3s:          # use the same id you configured in the plugin
-        displayName: Qwen3.8-27B IQ3_S
+llm-pi-ai: # the plugin namespace: `providers` lives UNDER it, not at the top level
+  providers:
+    llamacpp:
+      displayName: llama.cpp local
+      api: openai-completions
+      apiKeyEnv: LLAMACPP_API_KEY
+      baseURL: http://127.0.0.1:8080/v1
+      models: # a LIST of {id, name, ...}, not a map, and there is no per-model displayName
+        - id: qwen38-iq3s # must match the id you configured in the plugin
+          name: Qwen3.8-27B IQ3_S
+          contextWindow: 131072
+          input:
+            - text # add `image` when the model is launched with an mmproj
 ```
+
+> The settings page's **Integration guide → Copy YAML** generates exactly this
+> block, already filled in from your configured models — prefer it over retyping.
 
 > The plugin **never** reads or writes DSH's `settings.yaml`. That file is yours.
 
