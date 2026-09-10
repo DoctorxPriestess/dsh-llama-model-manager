@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Tests (Windows, Node ${{ matrix.node }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 20 is the declared floor; 22 and 24 are what people actually run.
+        node: ['20', '22', '24']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      # No dependencies and no build step: the plugin deliberately ships with
+      # neither, so this is the whole install.
+      - name: Show environment
+        run: |
+          node --version
+          npm --version
+
+      - name: Run tests
+        run: npm test
+
+  package:
+    name: Package sanity
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: package.json is valid and complete
+        shell: pwsh
+        run: |
+          $pkg = Get-Content package.json -Raw | ConvertFrom-Json
+          if (-not $pkg.name) { throw 'package.json has no name' }
+          if (-not $pkg.version) { throw 'package.json has no version' }
+          if (-not $pkg.repository.url) { throw 'package.json has no repository.url' }
+          if (-not $pkg.license) { throw 'package.json has no license' }
+          if ($pkg.dsh.bundle.patch -ne './cordis.patch.yml') { throw 'dsh.bundle.patch is wrong' }
+          Write-Host "name=$($pkg.name) version=$($pkg.version) license=$($pkg.license)"
+
+      - name: Every file referenced by package.json exists
+        shell: pwsh
+        run: |
+          $pkg = Get-Content package.json -Raw | ConvertFrom-Json
+          $missing = @()
+          foreach ($f in $pkg.files) {
+            if ($f -match '\.') {
+              if (-not (Test-Path $f)) { $missing += $f }
+            } elseif (-not (Test-Path $f)) { $missing += "$f/" }
+          }
+          if ($missing.Count -gt 0) { throw "missing: $($missing -join ', ')" }
+          foreach ($p in @('README.md','README.zh-CN.md','LICENSE','CHANGELOG.md','CONTRIBUTING.md','.gitignore','.gitattributes')) {
+            if (-not (Test-Path $p)) { throw "missing $p" }
+          }
+          Write-Host 'all declared files present'
+
+      - name: No machine-specific paths committed
+        shell: pwsh
+        run: |
+          # The repo must not carry one developer's absolute paths.
+          $patterns = @('C:\\Users\\[A-Za-z0-9._-]+\\', 'D:\\LLM\\', 'ProgramData\\miniconda3')
+          $hits = @()
+          foreach ($p in $patterns) {
+            $found = Get-ChildItem -Recurse -File -Include *.js,*.mjs,*.json,*.yml,*.yaml,*.md,*.ps1 |
+              Where-Object { $_.FullName -notmatch '\\\.git\\' } |
+              Select-String -Pattern $p -ErrorAction SilentlyContinue
+            if ($found) { $hits += $found }
+          }
+          if ($hits.Count -gt 0) {
+            $hits | ForEach-Object { Write-Host "::error file=$($_.Path),line=$($_.LineNumber)::$($_.Line.Trim())" }
+            throw "found $($hits.Count) machine-specific path(s)"
+          }
+          Write-Host 'no machine-specific paths'
+
+      - name: Patch file parses and targets this package
+        shell: pwsh
+        run: |
+          $text = Get-Content cordis.patch.yml -Raw
+          if ($text -notmatch 'dsh-llama-model-manager') { throw 'cordis.patch.yml does not name this package' }
+          if ($text -notmatch '(?m)^\s*-\s*insert:') { throw 'cordis.patch.yml has no insert list' }
+          Write-Host 'cordis.patch.yml looks right'

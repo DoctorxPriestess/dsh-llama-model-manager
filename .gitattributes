@@ -1,0 +1,28 @@
+# Normalize line endings in the repository, so a Windows-authored plugin stays
+# readable and diffable from Linux/macOS checkouts.
+* text=auto eol=lf
+
+# Windows-specific scripts. Git will check these out with CRLF so that
+# Windows PowerShell (5.1) parses them without surprises.
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Keep the intent of the source files explicit
+*.js  text eol=lf
+*.mjs text eol=lf
+*.json text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.md   text eol=lf
+
+# Binary
+*.gguf binary
+*.dll  binary
+*.exe  binary
+*.png  binary
+*.jpg  binary
+*.ico  binary
+
+# Do not try to diff lockfiles/generated output
+pnpm-lock.yaml -diff

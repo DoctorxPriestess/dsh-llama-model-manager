@@ -1,0 +1,13 @@
+name: PR preview
+
+# The plugin has no build step, so a plain `npm test` is the whole gate.
+# Add jobs here only if they earn their runtime.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  noop:
+    runs-on: windows-latest
+    steps:
+      - run: echo "Reserved for future PR-only checks."

@@ -1,0 +1,51 @@
+{
+  "_comment": [
+    "Example of this plugin's own config file.",
+    "Location: %USERPROFILE%\\.dsh\\llama-model-manager\\config.json",
+    "",
+    "You normally never edit this by hand -- the settings page writes it, and it is",
+    "validated on load. This file exists to show the full shape.",
+    "",
+    "The plugin NEVER reads or writes DSH's own settings.yaml."
+  ],
+  "version": 1,
+  "settings": {
+    "llamaServerPath": "C:\\path\\to\\llama-server.exe",
+    "gatewayHost": "127.0.0.1",
+    "gatewayPort": 8080,
+    "internalPort": 18080,
+    "startupTimeoutMs": 180000,
+    "shutdownTimeoutMs": 30000,
+    "stopMethod": "auto",
+    "healthCheckIntervalMs": 500,
+    "healthPath": "/health",
+    "healthFallbackPath": "/v1/models",
+    "healthProbeTimeoutMs": 2000,
+    "forceShutdownAfterTimeoutMs": 300000,
+    "proxyTimeoutMs": 0,
+    "maxRequestBodyBytes": 134217728,
+    "maxQueuedRequests": 10,
+    "maxConcurrentRequests": 1,
+    "maxRetries": 1,
+    "startupModel": null,
+    "autoRecoverAfterCrash": false,
+    "cleanupStaleProcessOnStart": false,
+    "requireManagerToken": true
+  },
+  "models": {
+    "my-model": {
+      "id": "my-model",
+      "displayName": "My model",
+      "modelPath": "C:\\models\\my-model.gguf",
+      "arguments": "--ctx-size 8192 -ngl 99 -fa on",
+      "enabled": true
+    },
+    "my-model-vision": {
+      "id": "my-model-vision",
+      "displayName": "My model (with mmproj)",
+      "modelPath": "C:\\models\\my-model.gguf",
+      "arguments": "--ctx-size 16384 -ngl 99 -fa on --mmproj \"C:\\models\\mmproj-my-model.gguf\" --no-mmproj-offload",
+      "enabled": true
+    }
+  }
+}

@@ -1,0 +1,59 @@
+# Bundle layer for dsh-llama-model-manager.
+#
+# `config.seed` below is the plugin's DECLARATIVE DEFAULT. It is written to the
+# plugin's own config file only on FIRST run (when that file does not exist yet).
+# After that the settings page is the source of truth and this seed is ignored.
+#
+# The paths shipped here are PLACEHOLDERS on purpose -- there is no way to guess
+# where llama-server.exe or your GGUF files live. Either edit them below before
+# the first start, or leave them and fix them in
+# Settings -> 本地模型管理 after DSH restarts.
+#
+# The plugin never reads or writes DSH's own settings.yaml.
+- insert:
+    - id: llama-model-manager
+      name: 'dsh-llama-model-manager'
+      config:
+        logLevel: info
+        seed:
+          settings:
+            # REQUIRED: full path to llama-server.exe
+            llamaServerPath: 'C:\path\to\llama-server.exe'
+            gatewayHost: 127.0.0.1
+            # Must match the baseURL of the provider DSH uses for this gateway,
+            # e.g. providers.<name>.baseURL = http://127.0.0.1:8080/v1
+            gatewayPort: 8080
+            # Internal port llama-server itself listens on (not exposed to DSH).
+            internalPort: 18080
+            startupTimeoutMs: 180000
+            shutdownTimeoutMs: 30000
+            # 'auto' = try a real Ctrl+C first (llama.cpp then frees the model and
+            # its VRAM), fall back to taskkill /F. Delivered over a hidden
+            # console, so no window ever appears.
+            # 'ctrl-c'   = never force-terminate.
+            # 'taskkill' = skip Ctrl+C and terminate forcefully.
+            stopMethod: auto
+            healthCheckIntervalMs: 500
+            # How long a switch/stop waits for in-flight inference before forcing.
+            # 0 = wait forever.
+            forceShutdownAfterTimeoutMs: 300000
+            maxQueuedRequests: 10
+            maxConcurrentRequests: 1
+            maxRetries: 1
+            # Model id auto-loaded when DSH starts, or null for none.
+            startupModel: null
+            autoRecoverAfterCrash: false
+            # Kill a llama-server left behind by a previous run of this plugin.
+            # Only ever applied to a process this plugin spawned AND can still
+            # positively identify (pid + image name + served model path).
+            cleanupStaleProcessOnStart: false
+            requireManagerToken: true
+          models:
+            example-model:
+              displayName: Example model
+              # REQUIRED: full path to your .gguf
+              modelPath: 'C:\path\to\models\your-model.gguf'
+              # Passed to llama-server verbatim, appended after the auto-filled
+              # -m / --host / --port. NOTE: `-fa` takes an OPTIONAL value, so
+              # always write `-fa on`, never a bare `-fa`.
+              arguments: '--ctx-size 8192 -ngl 99 -fa on'

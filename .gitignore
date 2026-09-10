@@ -141,3 +141,34 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Project-specific (dsh-llama-model-manager)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Plugin runtime state. These live in the DSH home, never in the repo, but a
+# stray copy from running the standalone entry point must not be committed.
+config.json
+config.json.bak
+runtime.json
+
+# Machine-specific development record.
+# docs/ROBUSTNESS.md holds the generic, reusable engineering findings and IS
+# committed; docs/ENVIRONMENT.md is a log of ONE machine (paths, pids, crash
+# dumps, DSH profile layout) and stays local.
+docs/ENVIRONMENT.md
+
+# Local overrides
+*.local.yml
+*.local.yaml
+
+# Editor & OS noise
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Crash dumps (llama-server has been observed to abort() on OOM)
+*.dmp

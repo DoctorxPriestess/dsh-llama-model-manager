@@ -1,0 +1,6 @@
+# Pull requests target master. There is no develop branch and no release branch:
+# tags are cut from master.
+master
+
+# Release tags are protected.
+v*

@@ -1,0 +1,102 @@
+name: Bug report
+description: Something isn't working
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. This plugin sits close to Win32 process and console
+        semantics, so a few specifics go a long way — the same symptom can have
+        completely different causes depending on your locale and llama.cpp build.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what you got instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        The relevant lines from the DSH startup log, and/or the plugin's own log
+        tail from the settings page. Please paste text, not screenshots.
+      render: text
+    validations:
+      required: false
+
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version and display language
+      description: 'Run `winver`, and tell us the UI language. Non-English locales genuinely change behaviour here.'
+      placeholder: 'Windows 11 24H2, Chinese (Simplified)'
+    validations:
+      required: true
+
+  - type: input
+    id: llama-server
+    attributes:
+      label: llama-server version / build
+      description: '`llama-server.exe --version`'
+      placeholder: '0.3.0-dev, build 10751, CUDA 13.0'
+    validations:
+      required: true
+
+  - type: input
+    id: dsh
+    attributes:
+      label: DSH version
+      placeholder: '0.1.1-rc.2'
+    validations:
+      required: true
+
+  - type: input
+    id: node
+    attributes:
+      label: Node.js version
+      description: '`node -v`'
+      placeholder: 'v24.19.0'
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part is affected?
+      multiple: true
+      options:
+        - Starting / loading a model
+        - Stopping a model (VRAM not released, hangs, window appears)
+        - Switching models
+        - Requests through the gateway (errors, timeouts, corruption)
+        - Settings page
+        - Leftover / orphaned llama-server process
+        - Registration into DSH (plugin does not load)
+        - Something else
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant plugin settings
+      description: |
+        From the settings page, or `%USERPROFILE%\.dsh\llama-model-manager\config.json`.
+        **Remove anything private** (usernames, API keys, full paths you'd rather not share).
+      render: json
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I ran `npm test` and it passed
+          required: false
+        - label: I checked the Troubleshooting section of the README
+          required: true

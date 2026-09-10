@@ -1,0 +1,40 @@
+{
+  "_comment": [
+    "The slice of DSH's settings.yaml you need so DSH talks to this plugin's gateway.",
+    "Location: %USERPROFILE%\\.dsh\\settings.yaml",
+    "",
+    "The plugin NEVER reads or writes this file -- it is shown here only so you know",
+    "what to add. YAML supports comments, so you can keep this block in the real file.",
+    "",
+    "The model ids under `models:` must match the ids configured in the plugin."
+  ],
+  "providers": {
+    "llamacpp": {
+      "displayName": "llama.cpp 本地",
+      "apiKeyEnv": "LLAMACPP_API_KEY",
+      "baseURL": "http://127.0.0.1:8080/v1",
+      "models": {
+        "qwen38-iq3s": {
+          "displayName": "Qwen3.8-27B IQ3_S"
+        },
+        "qwen38-apex-nano": {
+          "displayName": "Qwen3.8-27B APEX-I-Nano"
+        }
+      },
+      "modelOverrides": {}
+    }
+  },
+  "_yaml": [
+    "In actual YAML this reads:",
+    "",
+    "providers:",
+    "  llamacpp:",
+    "    displayName: llama.cpp 本地",
+    "    apiKeyEnv: LLAMACPP_API_KEY",
+    "    baseURL: http://127.0.0.1:8080/v1",
+    "    models:",
+    "      qwen38-iq3s:",
+    "        displayName: Qwen3.8-27B IQ3_S",
+    "    modelOverrides: {}"
+  ]
+}

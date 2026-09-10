@@ -1,2 +1,331 @@
 # dsh-llama-model-manager
-A DSH plugin that manages local llama.cpp GGUF model lifecycles, automatically loading and unloading models on demand through an OpenAI-compatible gateway.
+
+[English](README.md) · [简体中文](README.zh-CN.md)
+
+> A DSH plugin that manages local llama.cpp GGUF model lifecycles, automatically loading and
+> unloading models on demand through an OpenAI-compatible gateway.
+
+A [DeepSeek Harness](https://github.com/deepseek-ai) (DSH) plugin that runs **local GGUF models
+through `llama-server.exe` on Windows** and exposes them to DSH behind a stable,
+OpenAI-compatible gateway.
+
+It owns the whole model lifecycle — start, stop, switch, recover — so DSH only ever talks to
+one fixed URL while the model behind it can change freely.
+
+```
+DSH  ──►  http://127.0.0.1:8080/v1   ──►  this plugin's gateway
+                                            │  (serializes access, picks the model)
+                                            ▼
+                                         llama-server.exe  ──►  your-model.gguf
+                                         http://127.0.0.1:18080
+```
+
+---
+
+## Why this exists
+
+Pointing DSH straight at `llama-server` works until you want to **change models**. Then you have
+to stop the server, edit DSH's provider config, restart it, and hope nothing was mid-request.
+This plugin makes that a one-click operation and handles the parts that are easy to get wrong:
+
+| Problem | How it's handled |
+|---|---|
+| Switching models mid-request corrupts output | A serialization gate: inference holds a shared ticket, a switch needs an exclusive one and waits for in-flight requests to drain |
+| Stopping `llama-server` leaks ~12 GB of VRAM | A **real** `Ctrl+C` is delivered, so llama.cpp frees the model itself (`stopMethod: auto`) |
+| A stray console window flashes on every start/stop | Everything spawns with a hidden console (`CREATE_NO_WINDOW`) |
+| DSH dies and leaves an orphan holding the port + VRAM | `runtime.json` record + a leftover-process safety net that only ever touches a process it can positively attribute to itself |
+| The port is already taken by something else | Pre-flight bind check, with the owning process named in the error |
+| You can't tell what model is loaded right now | A settings page: live status, logs, model list, start/stop/switch/restart |
+
+---
+
+## Requirements
+
+- **Windows 10/11** (the plugin is Windows-only; the stop path depends on Win32 console semantics)
+- **Node.js ≥ 20.10** (DSH ships its own; v22+ recommended)
+- **DSH** with the web UI
+- A **`llama-server.exe`** build — [llama.cpp](https://github.com/ggml-org/llama.cpp) release
+  binaries or the conda package both work
+- One or more **`.gguf`** model files
+
+No npm dependencies. No build step.
+
+---
+
+## Install
+
+```bash
+dsh plugin --profile web add github:DoctorxPriestess/dsh-llama-model-manager
+```
+
+Then **restart DSH** — profile bundles are only read at startup.
+
+<details>
+<summary>Manual install (if <code>dsh plugin</code> isn't available)</summary>
+
+1. Put this repo anywhere, e.g. `D:\dsh\plugins\dsh-llama-model-manager`.
+2. Link it into the profile's `node_modules`:
+
+   ```powershell
+   New-Item -ItemType Junction `
+     -Path "$env:USERPROFILE\.dsh\profiles\web\node_modules\dsh-llama-model-manager" `
+     -Target "D:\dsh\plugins\dsh-llama-model-manager"
+   ```
+
+3. Append `"dsh-llama-model-manager"` to `dsh.profile.bundles` in
+   `%USERPROFILE%\.dsh\profiles\web\package.json`.
+4. Restart DSH.
+
+A junction (not a copy) means edits to the plugin take effect on the next restart.
+</details>
+
+---
+
+## Configure
+
+Open **Settings → 本地模型管理** and fill in two things:
+
+1. **llama-server path** — the full path to `llama-server.exe`.
+   The `.exe` is usually a small launcher next to a large `llama-server-impl.dll`; point at the
+   `.exe`.
+2. **At least one model** — a model id, a display name, and the full path to a `.gguf`.
+
+Then point a DSH provider at the gateway. In `%USERPROFILE%\.dsh\settings.yaml`:
+
+```yaml
+providers:
+  llamacpp:
+    displayName: llama.cpp local
+    baseURL: http://127.0.0.1:8080/v1
+    models:
+      qwen38-iq3s:          # use the same id you configured in the plugin
+        displayName: Qwen3.8-27B IQ3_S
+```
+
+> The plugin **never** reads or writes DSH's `settings.yaml`. That file is yours.
+
+Ports: the gateway listens on **8080** (what DSH calls); `llama-server` listens on **18080**
+(internal, never exposed to DSH). Change either in the settings page if they clash.
+
+### Per-model arguments
+
+`arguments` is passed to `llama-server` **verbatim**, appended after the auto-filled
+`-m / --host / --port`:
+
+```
+--ctx-size 131072 -fa on -ctk q4_0 -ctv q4_0 -b 256 -ub 256 -np 1 --jinja
+```
+
+Leave it empty and the plugin fills in just `-m`, `--host`, `--port`.
+
+> **`-fa` takes an *optional* value.** Write `-fa on`, never a bare `-fa` — a bare one swallows
+> the next flag (`-fa --no-webui` → `unknown value for --flash-attn: '--no-webui'`).
+
+If you set `maxConcurrentRequests > 1`, give llama-server a matching `-np`.
+
+---
+
+## The stop path (why `Ctrl+C` and not `taskkill`)
+
+This is the part that took the most measurement, so it's worth explaining.
+
+On Windows, `child.kill('SIGINT')` from Node **does not deliver a signal** — libuv compiles it to
+`TerminateProcess()`. It returns `true`, and the target gets no chance to clean up. Verified
+against a child whose `SIGINT` handler logs on entry: the handler never ran.
+
+`taskkill /PID <pid> /T` (without `/F`) is no better for a console process — it answers
+*"This process can only be terminated forcefully"*, because `llama-server` has no message loop to
+receive `WM_CLOSE`.
+
+What **does** work is a real console control event:
+
+```
+AttachConsole(pid)  →  GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0)
+```
+
+That requires the target to own a console, which is exactly what `windowsHide: true` provides
+(libuv passes `CREATE_NO_WINDOW` → a **hidden** console). So the plugin gets a genuine `Ctrl+C`
+**without ever showing a window** — and `llama-server` responds by running its own cleanup and
+calling `llama_model_free`.
+
+Measured end-to-end on a 27B model (`npm run e2e:ctrlc`):
+
+```
+health ready   : 40.1 s
+VRAM loaded    : 15267 MiB   (+12077)
+stop result    : {"forced":false,"method":"ctrl-c","code":0}
+VRAM after     :  3187 MiB   (-12080)
+```
+
+Clean exit code `0`, 12 GB of VRAM returned to the system, no window shown.
+
+Because Node has no API for this, a tiny PowerShell helper (`src/core/send-ctrlc.ps1`) performs
+the P/Invoke dance. It is spawned hidden, and it **refuses to broadcast** if the console turns out
+to be shared with other processes — otherwise `GenerateConsoleCtrlEvent(…, 0)` would deliver
+`Ctrl+C` to every process attached to it, including DSH itself.
+
+Escalation order, controlled by `stopMethod`:
+
+| `stopMethod` | Behaviour |
+|---|---|
+| `auto` *(default)* | `Ctrl+C` → wait `shutdownTimeoutMs` → `taskkill /T /F` |
+| `ctrl-c` | `Ctrl+C` only; never force-terminate |
+| `taskkill` | Skip `Ctrl+C`, terminate forcefully |
+
+The final fallback uses the **child handle**, not the pid, so a recycled pid can never make the
+plugin terminate an unrelated process.
+
+---
+
+## Settings reference
+
+| Setting | Default | Notes |
+|---|---|---|
+| `llamaServerPath` | *(empty)* | Full path to `llama-server.exe`. Required. |
+| `gatewayHost` / `gatewayPort` | `127.0.0.1` / `8080` | What DSH connects to. |
+| `internalPort` | `18080` | What `llama-server` binds. |
+| `startupTimeoutMs` | `180000` | A 27B model can take ~50 s to load. |
+| `shutdownTimeoutMs` | `30000` | Grace period before forcing. Freeing 12 GB takes ~5 s. |
+| `stopMethod` | `auto` | See above. |
+| `healthCheckIntervalMs` | `500` | Health poll interval while loading. |
+| `forceShutdownAfterTimeoutMs` | `300000` | How long a switch waits for in-flight inference before forcing. `0` = forever. |
+| `maxQueuedRequests` | `10` | Queue cap; overflow returns HTTP 429. |
+| `maxConcurrentRequests` | `1` | Keep at `1` for `-np 1` models. |
+| `maxRetries` | `1` | Extra start attempts after a failure. |
+| `startupModel` | `null` | Model id to preload when DSH starts. |
+| `autoRecoverAfterCrash` | `false` | Reload once after an unexpected exit (never loops). |
+| `cleanupStaleProcessOnStart` | `false` | Kill a leftover from a previous run (see below). |
+| `requireManagerToken` | `true` | Require `x-llama-manager: 1` on mutating API calls. |
+
+Config lives in its own file — `%USERPROFILE%\.dsh\llama-model-manager\config.json` — and is
+written atomically with a `.bak` of the previous version.
+
+---
+
+## Management API
+
+Same origin as the DSH UI: `http://127.0.0.1:3080/llama-model-manager/api/...`
+
+Mutating calls need the header `x-llama-manager: 1` (unless `requireManagerToken` is off).
+Requests with a non-loopback `Host` header are rejected.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/manager/status` | State, current model, stats, recent logs |
+| `GET` | `/manager/health` | Lightweight liveness |
+| `GET` | `/manager/logs?limit=N` | Recent log lines |
+| `GET` | `/manager/config` | Current config + config path + warnings |
+| `PUT` | `/manager/config` | Replace config (normalized, validated) |
+| `POST` | `/manager/config/validate` | Validate without applying |
+| `GET` | `/manager/models` | List configured models |
+| `POST` | `/manager/models` | Add or update a model |
+| `DELETE` | `/manager/models/:id` | Remove a model |
+| `POST` | `/manager/load` | Load (or switch to) a model |
+| `POST` | `/manager/unload` | Stop the current model |
+| `POST` | `/manager/restart` | Restart the current (or named) model |
+| `POST` | `/manager/preview` | Show the exact argv that would be used |
+| `GET`/`DELETE` | `/manager/last-error` | Read or clear the last error |
+| `GET`/`POST` | `/manager/stale-process` | Inspect or clean a leftover process |
+| `POST` | `/manager/scan` | Scan a directory for `.gguf` files |
+| `GET` | `/manager/runtime` | Runtime metadata |
+
+The gateway also serves OpenAI-compatible traffic (`/v1/chat/completions`, `/v1/models`,
+`/v1/embeddings`, …), proxied to the loaded model. Note that `llama-server`'s own `/v1/models`
+is **not** OpenAI-shaped, so the gateway synthesizes a proper OpenAI response rather than
+passing it through.
+
+---
+
+## Leftover processes
+
+On Windows a dying parent does **not** take its children with it. If DSH is killed while a model
+is loaded, `llama-server` survives holding the port and the VRAM, and the next start fails.
+
+The plugin writes `runtime.json` (pid, image path, model, port) when a model becomes ready and
+deletes it on a clean stop. On startup it checks that record — but only kills a process when
+**all** of these hold:
+
+1. the recorded pid is still alive;
+2. its image name matches the recorded executable;
+3. it answers on the recorded port and its `/v1/models` reports the recorded model path.
+
+A recycled pid cannot satisfy all three. If a process can't be attributed, the plugin says so and
+**does nothing to it**.
+
+---
+
+## Standalone mode
+
+```bash
+npm start                 # gateway + manager without DSH
+```
+
+Useful for driving the gateway from any other client. Pass `--port`, `--host`,
+`--config <path>` as needed — see `src/standalone.js`.
+
+---
+
+## Development
+
+```bash
+npm test                  # 64 unit/integration tests, ~4 s, no model needed
+npm run preflight         # validate registration into a DSH profile
+npm run e2e:ctrlc         # real model: graceful stop + VRAM release
+npm run e2e:orphan        # real model: leftover-process safety gate + cleanup
+```
+
+The e2e scripts need a real model. They resolve paths from `LLAMA_SERVER_PATH` /
+`LLAMA_MODEL`, or fall back to the plugin's own config — nothing is hardcoded:
+
+```powershell
+$env:LLAMA_SERVER_PATH = 'C:\path\to\llama-server.exe'
+$env:LLAMA_MODEL       = 'C:\models\your-model.gguf'
+npm run e2e:ctrlc
+```
+
+`docs/ROBUSTNESS.md` documents the concrete defects found during development and the exact
+conditions that trigger them — including the ones that only appear on non-English Windows.
+
+### Layout
+
+```
+src/
+  index.js            DSH host plugin (routes + lifecycle)
+  standalone.js       run without DSH
+  core/
+    manager.js        model lifecycle, crash recovery, leftover-process attribution
+    process.js        spawn/stop, Ctrl+C escalation
+    gate.js           serialization gate (shared vs exclusive tickets)
+    gateway.js        OpenAI-compatible reverse proxy
+    api.js            management API
+    args.js           command-line tokenizer / argv builder
+    config.js         config schema, validation, atomic save
+    health.js         readiness probing, port checks
+    send-ctrlc.ps1    the Win32 console control event helper
+lib/client.js         settings page (hand-written module, no build step)
+```
+
+---
+
+## Troubleshooting
+
+**"Gateway failed to start" / port in use** — the error names the owning process. Change
+`gatewayPort`, or stop whatever holds it.
+
+**Model never becomes ready** — the error includes the last ~40 lines of `llama-server` stderr.
+Common causes: a wrong `--ctx-size` for the VRAM available, or `-ngl` too high.
+
+**`0xC0000409` in an error message** — `llama-server` called `abort()` (typically `GGML_ASSERT`
+or a CUDA failure) rather than being stopped by the plugin. The plugin reports this as a crash,
+not as a graceful stop, and locks the model to prevent an endless restart loop.
+
+**Stopping takes ~5 s** — expected. That's llama.cpp freeing a ~12 GB model.
+
+**Settings page missing** — the plugin failed to load. Check the DSH startup log, and run
+`npm run preflight`.
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).

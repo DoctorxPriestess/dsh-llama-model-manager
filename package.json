@@ -1,0 +1,67 @@
+{
+  "name": "dsh-llama-model-manager",
+  "version": "1.0.0",
+  "private": true,
+  "description": "DSH plugin: manages the Windows llama-server.exe model lifecycle (start / stop / switch / recover) behind a stable OpenAI-compatible gateway, with graceful Ctrl+C shutdown that actually frees VRAM.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./client": "./lib/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "files": [
+    "src",
+    "lib",
+    "cordis.patch.yml",
+    "examples",
+    "docs",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "start": "node src/standalone.js",
+    "test": "node --test \"test/*.test.js\"",
+    "e2e:ctrlc": "node scripts/e2e-ctrlc.mjs",
+    "e2e:orphan": "node scripts/e2e-orphan-recovery.mjs",
+    "preflight": "node scripts/preflight-registration.mjs"
+  },
+  "engines": {
+    "node": ">=20.10"
+  },
+  "os": [
+    "win32"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DoctorxPriestess/dsh-llama-model-manager.git"
+  },
+  "homepage": "https://github.com/DoctorxPriestess/dsh-llama-model-manager",
+  "bugs": {
+    "url": "https://github.com/DoctorxPriestess/dsh-llama-model-manager/issues"
+  },
+  "author": "DoctorxPriestess",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "cordis",
+    "llama.cpp",
+    "llama-server",
+    "gguf",
+    "local-llm",
+    "windows",
+    "openai-compatible"
+  ]
+}
