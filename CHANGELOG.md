@@ -29,6 +29,12 @@ Initial release.
   and served model *all* match.
 - **Settings page** (no build step) with live status, log tail, model editor,
   directory scan for `.gguf` files, argv preview and one-click actions.
+- **Always-available stop button.** The stop control used to render only while a
+  model was loaded, which left no way to stop `llama-server` from the UI after a
+  crash or a failed load — precisely when reclaiming VRAM matters most. It is now
+  always present, disabled only while another operation is in flight, and it
+  reports honestly when there was nothing to stop. `POST /manager/unload` was
+  already safe to call unconditionally.
 - **Management HTTP API** with same-origin access from the DSH UI, host-header
   validation, and an opt-out `x-llama-manager` token for mutating calls.
 - **Standalone mode** (`npm start`) for using the gateway without DSH.
