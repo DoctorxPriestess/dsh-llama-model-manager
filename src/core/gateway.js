@@ -121,16 +121,24 @@ export class Gateway {
     this.server = null;
     this.listening = false;
     await new Promise((resolve) => {
-      server.close(() => resolve());
-      // Force-close idle keep-alive sockets so shutdown cannot hang.
-      setTimeout(() => {
+      let timer = null;
+      const finish = () => {
+        if (timer) clearTimeout(timer);
+        resolve();
+      };
+      server.close(() => finish());
+      // Force-close idle keep-alive sockets so shutdown cannot hang. NOT
+      // unref()'d: if open sockets keep this promise pending, this deadline is
+      // the only remaining way to settle it. Cleared above once either path
+      // finishes.
+      timer = setTimeout(() => {
         try {
           server.closeAllConnections?.();
         } catch {
           /* ignore */
         }
-        resolve();
-      }, 1500).unref?.();
+        finish();
+      }, 1500);
     });
   }
 

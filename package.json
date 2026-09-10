@@ -32,7 +32,7 @@
   ],
   "scripts": {
     "start": "node src/standalone.js",
-    "test": "node --test \"test/*.test.js\"",
+    "test": "node scripts/run-tests.mjs",
     "e2e:ctrlc": "node scripts/e2e-ctrlc.mjs",
     "e2e:orphan": "node scripts/e2e-orphan-recovery.mjs",
     "preflight": "node scripts/preflight-registration.mjs"

@@ -79,7 +79,10 @@ test('src/ contains no unref() outside the reviewed allowlist', () => {
       readFileSync(full, 'utf8')
         .split(/\r?\n/)
         .forEach((line, index) => {
-          if (/\.unref\(\)/.test(line)) found.push(`${entry.name}:${index + 1}`);
+          // `.unref\b`, not `.unref()`: the optional-call form `.unref?.()` is
+          // semantically identical, and the narrower regex this test started
+          // with silently let one of those through.
+          if (/\.unref\b/.test(line)) found.push(`${entry.name}:${index + 1}`);
         });
     }
   };

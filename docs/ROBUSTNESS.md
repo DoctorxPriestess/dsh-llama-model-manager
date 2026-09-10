@@ -198,12 +198,17 @@ failureType: 'cancelledByParent'
 | `process.js` `_raceExit` | `stop()` / `killNow()` 等待进程退出的超时臂 |
 | `process.js` `_sendCtrlC` | CTRL+C 辅助进程卡死时的兜底 deadline |
 | `gateway.js` proxy timeout | 上游卡死时中止请求的 deadline |
+| `gateway.js` `close()` 兜底 | 还有 keep-alive 连接时，唯一能结算关停 promise 的 deadline |
 | `health.js` 端口探测 | `listen()` 不回话时结算探测的 deadline（并补上原先缺失的 `clearTimeout`） |
 | `test/unit.process.test.js` `FakeChild.exitAfter` | `stop()` 所等待的进程退出事件 |
 
 **回归防线**：`test/unit.eventloop.test.js` 把验证放进一个**子进程**，该子进程只 await
 两个 deadline、别的什么都不做 —— 这样 runner 再也无法「顺手」撑住事件循环。修复前该子进程
-退出码 13，修复后退出 0。同文件还有一条源码级检查：禁止 `src/` 出现白名单外的 `unref()`。
+退出码 13，修复后退出 0。同文件还有一条源码级检查：禁止 `src/` 出现白名单外的 `unref`。
+
+> 该检查第一版用 `\.unref\(\)` 匹配，**漏掉了 `.unref?.()`**（可选调用写法，语义完全相同），
+> 于是它一边报「通过」、一边放过了 `gateway.js` 里真实存在的那一处。已改为 `\.unref\b`。
+> 教训：**守卫本身也要被验证** —— 一条永远通过的断言比没有断言更危险。
 
 > 一般化：**测试通过不等于代码正确**。单元测试若通过只是因为「runner 恰好替我撑住了事件
 > 循环」，那它验证的是 runner 的行为，不是代码的行为。凡是「必须发生才会继续」的时序，

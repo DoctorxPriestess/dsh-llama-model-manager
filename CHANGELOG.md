@@ -7,6 +7,16 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
+- **`npm test` could not run on Node 20 at all.** The script was
+  `node --test "test/*.test.js"`, and Node only began expanding globs in `--test`
+  positional arguments in v21: on Node 20 the pattern is treated as a literal
+  path and the runner exits 1 with `Could not find '...\test\*.test.js'`. Once the
+  lost-deadline bug below was fixed, that was the entire remaining Node 20
+  failure (22 and 24 passed). `npm test` now runs `scripts/run-tests.mjs`, which
+  resolves the file list itself and passes explicit paths — the one form every
+  supported version agrees on. Node's default discovery was rejected as a
+  substitute because it matches `test/**` and would execute the
+  `test/fixtures/` child helper as if it were a test.
 - **Lost deadlines under `unref()`.** A timer whose firing is the only way an
   awaited promise can settle must not be `unref()`d: with nothing else holding
   the event loop, Node drains the loop first, the deadline never fires, and the
@@ -15,8 +25,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   already resolved` / `cancelledByParent`). This is what made CI fail on Node 20
   and 22 while passing on 24 — the newer runner happened to hold the loop open
   and mask it. Affected deadlines: the gate's drain timer, `_raceExit`,
-  `_sendCtrlC`'s helper timeout, the gateway proxy timeout, the port probe (which
-  was also missing its `clearTimeout`), and the `FakeChild` test helper.
+  `_sendCtrlC`'s helper timeout, the gateway proxy timeout, the gateway server
+  `close()` fallback, the port probe (which was also missing its `clearTimeout`),
+  and the `FakeChild` test helper.
   Regression-tested in a **child process** so the runner cannot mask it again
   (`test/unit.eventloop.test.js`).
 - `test/unit.stale.test.js` used `import.meta.dirname`, which requires Node
