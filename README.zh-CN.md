@@ -1,4 +1,5 @@
 # dsh-llama-model-manager
+[![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/doctorxpriestess/dsh-llama-model-manager)
 
 [English](README.md) · [简体中文](README.zh-CN.md)
 
